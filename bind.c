@@ -1,24 +1,23 @@
 /* bind.c -- key binding and startup file support for the readline library. */
 
-/* Copyright (C) 1987, 1989, 1992 Free Software Foundation, Inc.
+/* Copyright (C) 1987-2010 Free Software Foundation, Inc.
 
-   This file is part of the GNU Readline Library, a library for
-   reading lines of text with interactive input and history editing.
+   This file is part of the GNU Readline Library (Readline), a library
+   for reading lines of text with interactive input and history editing.
 
-   The GNU Readline Library is free software; you can redistribute it
-   and/or modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2, or
+   Readline is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
    (at your option) any later version.
 
-   The GNU Readline Library is distributed in the hope that it will be
-   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
-   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   Readline is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
 
-   The GNU General Public License is often shipped with GNU software, and
-   is generally kept in a file called COPYING or LICENSE.  If you do not
-   have a copy of the license, write to the Free Software Foundation,
-   59 Temple Place, Suite 330, Boston, MA 02111 USA. */
+   You should have received a copy of the GNU General Public License
+   along with Readline.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #define READLINE_LIBRARY
 
@@ -82,7 +81,10 @@ static char *_rl_read_file PARAMS((char *, size_t *));
 static void _rl_init_file_error PARAMS((const char *));
 static int _rl_read_init_file PARAMS((const char *, int));
 static int glean_key_from_name PARAMS((char *));
-static int substring_member_of_array PARAMS((char *, const char **));
+static int find_boolean_var PARAMS((const char *));
+
+static char *_rl_get_string_variable_value PARAMS((const char *));
+static int substring_member_of_array PARAMS((const char *, const char * const *));
 
 static int currently_reading_init_file;
 
@@ -319,7 +321,7 @@ rl_macro_bind (keyseq, macro, map)
 
   if (rl_translate_keyseq (macro, macro_keys, &macro_keys_len))
     {
-      free (macro_keys);
+      xfree (macro_keys);
       return -1;
     }
   rl_generic_bind (ISMACR, keyseq, macro_keys, map);
@@ -346,10 +348,10 @@ rl_generic_bind (type, keyseq, data, map)
   k.function = 0;
 
   /* If no keys to bind to, exit right away. */
-  if (!keyseq || !*keyseq)
+  if (keyseq == 0 || *keyseq == 0)
     {
       if (type == ISMACR)
-	free (data);
+	xfree (data);
       return -1;
     }
 
@@ -360,7 +362,7 @@ rl_generic_bind (type, keyseq, data, map)
      KEYS into KEYS_LEN. */
   if (rl_translate_keyseq (keyseq, keys, &keys_len))
     {
-      free (keys);
+      xfree (keys);
       return -1;
     }
 
@@ -372,9 +374,12 @@ rl_generic_bind (type, keyseq, data, map)
 
       ic = uc;
       if (ic < 0 || ic >= KEYMAP_SIZE)
-	return -1;
+        {
+          xfree (keys);
+	  return -1;
+        }
 
-      if (_rl_convert_meta_chars_to_ascii && META_CHAR (ic))
+      if (META_CHAR (ic) && _rl_convert_meta_chars_to_ascii)
 	{
 	  ic = UNMETA (ic);
 	  if (map[ESC].type == ISKMAP)
@@ -413,11 +418,18 @@ rl_generic_bind (type, keyseq, data, map)
       else
 	{
 	  if (map[ic].type == ISMACR)
-	    free ((char *)map[ic].function);
+	    xfree ((char *)map[ic].function);
 	  else if (map[ic].type == ISKMAP)
 	    {
 	      map = FUNCTION_TO_KEYMAP (map, ic);
 	      ic = ANYOTHERKEY;
+	      /* If we're trying to override a keymap with a null function
+		 (e.g., trying to unbind it), we can't use a null pointer
+		 here because that's indistinguishable from having not been
+		 overridden.  We use a special bindable function that does
+		 nothing. */
+	      if (type == ISFUNC && data == 0)
+		data = (char *)_rl_null_function;
 	    }
 
 	  map[ic].function = KEYMAP_TO_FUNCTION (data);
@@ -426,7 +438,7 @@ rl_generic_bind (type, keyseq, data, map)
 
       rl_binding_keymap = map;
     }
-  free (keys);
+  xfree (keys);
   return 0;
 }
 
@@ -464,8 +476,24 @@ rl_translate_keyseq (seq, array, len)
 		}
 	      else if (c == 'M')
 		{
-		  i++;
-		  array[l++] = ESC;	/* ESC is meta-prefix */
+		  i++;		/* seq[i] == '-' */
+		  /* XXX - obey convert-meta setting */
+		  if (_rl_convert_meta_chars_to_ascii && _rl_keymap[ESC].type == ISKMAP)
+		    array[l++] = ESC;	/* ESC is meta-prefix */
+		  else if (seq[i+1] == '\\' && seq[i+2] == 'C' && seq[i+3] == '-')
+		    {
+		      i += 4;
+		      temp = (seq[i] == '?') ? RUBOUT : CTRL (_rl_to_upper (seq[i]));
+		      array[l++] = META (temp);
+		    }
+		  else
+		    {
+		      /* This doesn't yet handle things like \M-\a, which may
+			 or may not have any reasonable meaning.  You're
+			 probably better off using straight octal or hex. */
+		      i++;
+		      array[l++] = META (seq[i]);
+		    }
 		}
 	      else if (c == 'C')
 		{
@@ -560,6 +588,11 @@ rl_untranslate_keyseq (seq)
       kseq[i++] = '-';
       c = UNMETA (c);
     }
+  else if (c == ESC)
+    {
+      kseq[i++] = '\\';
+      c = 'e';
+    }
   else if (CTRL_CHAR (c))
     {
       kseq[i++] = '\\';
@@ -608,7 +641,12 @@ _rl_untranslate_macro_value (seq)
 	  *r++ = '-';
 	  c = UNMETA (c);
 	}
-      else if (CTRL_CHAR (c) && c != ESC)
+      else if (c == ESC)
+	{
+	  *r++ = '\\';
+	  c = 'e';
+	}
+      else if (CTRL_CHAR (c))
 	{
 	  *r++ = '\\';
 	  *r++ = 'C';
@@ -667,7 +705,7 @@ rl_function_of_keyseq (keyseq, map, type)
 {
   register int i;
 
-  if (!map)
+  if (map == 0)
     map = _rl_keymap;
 
   for (i = 0; keyseq && keyseq[i]; i++)
@@ -676,17 +714,19 @@ rl_function_of_keyseq (keyseq, map, type)
 
       if (META_CHAR (ic) && _rl_convert_meta_chars_to_ascii)
 	{
-	  if (map[ESC].type != ISKMAP)
+	  if (map[ESC].type == ISKMAP)
+	    {
+	      map = FUNCTION_TO_KEYMAP (map, ESC);
+	      ic = UNMETA (ic);
+	    }
+	  /* XXX - should we just return NULL here, since this obviously
+	     doesn't match? */
+	  else
 	    {
 	      if (type)
 		*type = map[ESC].type;
 
 	      return (map[ESC].function);
-	    }
-	  else
-	    {
-	      map = FUNCTION_TO_KEYMAP (map, ESC);
-	      ic = UNMETA (ic);
 	    }
 	}
 
@@ -694,7 +734,7 @@ rl_function_of_keyseq (keyseq, map, type)
 	{
 	  /* If this is the last key in the key sequence, return the
 	     map. */
-	  if (!keyseq[i + 1])
+	  if (keyseq[i + 1] == '\0')
 	    {
 	      if (type)
 		*type = ISKMAP;
@@ -704,7 +744,12 @@ rl_function_of_keyseq (keyseq, map, type)
 	  else
 	    map = FUNCTION_TO_KEYMAP (map, ic);
 	}
-      else
+      /* If we're not at the end of the key sequence, and the current key
+	 is bound to something other than a keymap, then the entire key
+	 sequence is not bound. */
+      else if (map[ic].type != ISKMAP && keyseq[i+1])
+	return ((rl_command_func_t *)NULL);
+      else	/* map[ic].type != ISKMAP && keyseq[i+1] == 0 */
 	{
 	  if (type)
 	    *type = map[ic].type;
@@ -759,9 +804,11 @@ _rl_read_file (filename, sizep)
 
   if (i < 0)
     {
-      free (buffer);
+      xfree (buffer);
       return ((char *)NULL);
     }
+
+  RL_CHECK_SIGNALS ();
 
   buffer[i] = '\0';
   if (sizep)
@@ -786,6 +833,7 @@ rl_re_read_init_file (count, ignore)
      1. the filename used for the previous call
      2. the value of the shell variable `INPUTRC'
      3. ~/.inputrc
+     4. /etc/inputrc
    If the file existed and could be opened and read, 0 is returned,
    otherwise errno is returned. */
 int
@@ -794,16 +842,17 @@ rl_read_init_file (filename)
 {
   /* Default the filename. */
   if (filename == 0)
+    filename = last_readline_init_file;
+  if (filename == 0)
+    filename = sh_get_env_value ("INPUTRC");
+  if (filename == 0 || *filename == 0)
     {
-      filename = last_readline_init_file;
-      if (filename == 0)
-        filename = sh_get_env_value ("INPUTRC");
-      if (filename == 0)
-	filename = DEFAULT_INPUTRC;
+      filename = DEFAULT_INPUTRC;
+      /* Try to read DEFAULT_INPUTRC; fall back to SYS_INPUTRC on failure */
+      if (_rl_read_init_file (filename, 0) == 0)
+	return 0;
+      filename = SYS_INPUTRC;
     }
-
-  if (*filename == 0)
-    filename = DEFAULT_INPUTRC;
 
 #if defined (__MSDOS__)
   if (_rl_read_init_file (filename, 0) == 0)
@@ -827,7 +876,9 @@ _rl_read_init_file (filename, include_level)
 
   openname = tilde_expand (filename);
   buffer = _rl_read_file (openname, &file_size);
-  free (openname);
+  xfree (openname);
+
+  RL_CHECK_SIGNALS ();
 
 #if defined (_WIN32) && defined (INITFILES_IN_REGISTRY)
   if (buffer == 0)
@@ -913,11 +964,11 @@ _rl_init_file_error (msg)
 typedef int _rl_parser_func_t PARAMS((char *));
 
 /* Things that mean `Control'. */
-const char *_rl_possible_control_prefixes[] = {
+const char * const _rl_possible_control_prefixes[3] = {
   "Control-", "C-", "CTRL-", (const char *)NULL
 };
 
-const char *_rl_possible_meta_prefixes[] = {
+const char * const _rl_possible_meta_prefixes[3] = {
   "Meta", "M-", (const char *)NULL
 };
 
@@ -2228,8 +2279,8 @@ rl_dump_variables (count, key)
 /* Return non-zero if any members of ARRAY are a substring in STRING. */
 static int
 substring_member_of_array (string, array)
-     char *string;
-     const char **array;
+     const char *string;
+     const char * const *array;
 {
   while (*array)
     {

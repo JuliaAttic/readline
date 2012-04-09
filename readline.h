@@ -1,24 +1,23 @@
 /* Readline.h -- the names of functions callable from within readline. */
 
-/* Copyright (C) 1987-2004 Free Software Foundation, Inc.
+/* Copyright (C) 1987-2011 Free Software Foundation, Inc.
 
-   This file is part of the GNU Readline Library, a library for
-   reading lines of text with interactive input and history editing.
+   This file is part of the GNU Readline Library (Readline), a library
+   for reading lines of text with interactive input and history editing.      
 
-   The GNU Readline Library is free software; you can redistribute it
-   and/or modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2, or
+   Readline is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
    (at your option) any later version.
 
-   The GNU Readline Library is distributed in the hope that it will be
-   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
-   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   Readline is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
 
-   The GNU General Public License is often shipped with GNU software, and
-   is generally kept in a file called COPYING or LICENSE.  If you do not
-   have a copy of the license, write to the Free Software Foundation,
-   59 Temple Place, Suite 330, Boston, MA 02111 USA. */
+   You should have received a copy of the GNU General Public License
+   along with Readline.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #if !defined (_READLINE_H_)
 #define _READLINE_H_
@@ -47,8 +46,10 @@ extern "C" {
 # else /* assume USE_READLINE_DLL */
 #  define READLINE_DLL_IMPEXP     __DLL_IMPORT__
 # endif
-#else /* __WIN32__ */
-# define READLINE_DLL_IMPEXP  
+#elif defined(__GNUC__) /* __WIN32__ */
+# define READLINE_DLL_IMPEXP extern 
+#else
+# define READLINE_DLL_IMPEXP
 #endif
 
 #if defined (READLINE_LIBRARY)
@@ -120,7 +121,9 @@ READLINE_DLL_IMPEXP int rl_forward_word PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_backward_word PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_refresh_line PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_clear_screen PARAMS((int, int));
+READLINE_DLL_IMPEXP int rl_skip_csi_sequence PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_arrow_keys PARAMS((int, int));
+
 
 /* Bindable commands for inserting and deleting text. */
 READLINE_DLL_IMPEXP int rl_insert PARAMS((int, int));
@@ -175,7 +178,9 @@ READLINE_DLL_IMPEXP int rl_dump_variables PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_complete PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_possible_completions PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_insert_completions PARAMS((int, int));
+READLINE_DLL_IMPEXP int rl_old_menu_complete PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_menu_complete PARAMS((int, int));
+READLINE_DLL_IMPEXP int rl_backward_menu_complete PARAMS((int, int));
 
 /* Bindable commands for killing and yanking text, and managing the kill ring. */
 READLINE_DLL_IMPEXP int rl_kill_word PARAMS((int, int));
@@ -257,6 +262,7 @@ READLINE_DLL_IMPEXP int rl_vi_append_mode PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_append_eol PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_eof_maybe PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_insertion_mode PARAMS((int, int));
+READLINE_DLL_IMPEXP int rl_vi_insert_mode PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_movement_mode PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_arg_digit PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_change_case PARAMS((int, int));
@@ -265,6 +271,7 @@ READLINE_DLL_IMPEXP int rl_vi_column PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_delete_to PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_change_to PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_yank_to PARAMS((int, int));
+READLINE_DLL_IMPEXP int rl_vi_rubout PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_delete PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_back_to_indent PARAMS((int, int));
 READLINE_DLL_IMPEXP int rl_vi_first_print PARAMS((int, int));
@@ -326,6 +333,7 @@ READLINE_DLL_IMPEXP int rl_bind_keyseq_in_map PARAMS((const char *, rl_command_f
 READLINE_DLL_IMPEXP int rl_bind_keyseq_if_unbound PARAMS((const char *, rl_command_func_t *));
 READLINE_DLL_IMPEXP int rl_bind_keyseq_if_unbound_in_map PARAMS((const char *, rl_command_func_t *, Keymap));
 READLINE_DLL_IMPEXP int rl_generic_bind PARAMS((int, const char *, char *, Keymap));
+READLINE_DLL_IMPEXP char *rl_variable_value PARAMS((const char *));
 READLINE_DLL_IMPEXP int rl_variable_bind PARAMS((const char *, const char *));
 
 /* Backwards compatibility, use rl_bind_keyseq_in_map instead. */
@@ -425,6 +433,7 @@ READLINE_DLL_IMPEXP int rl_reset_terminal PARAMS((const char *));
 READLINE_DLL_IMPEXP void rl_resize_terminal PARAMS((void));
 READLINE_DLL_IMPEXP void rl_set_screen_size PARAMS((int, int));
 READLINE_DLL_IMPEXP void rl_get_screen_size PARAMS((int *, int *));
+READLINE_DLL_IMPEXP void rl_reset_screen_size PARAMS((void));
 
 READLINE_DLL_IMPEXP char *rl_get_termcap PARAMS((const char *));
 
@@ -440,6 +449,7 @@ READLINE_DLL_IMPEXP int rl_set_keyboard_input_timeout PARAMS((int));
 READLINE_DLL_IMPEXP void rl_extend_line_buffer PARAMS((int));
 READLINE_DLL_IMPEXP int rl_ding PARAMS((void));
 READLINE_DLL_IMPEXP int rl_alphabetic PARAMS((int));
+READLINE_DLL_IMPEXP void rl_free PARAMS((void *));
 
 /* Readline signal handling, from signals.c */
 READLINE_DLL_IMPEXP int rl_set_signals PARAMS((void));
@@ -448,6 +458,8 @@ READLINE_DLL_IMPEXP void rl_cleanup_after_signal PARAMS((void));
 READLINE_DLL_IMPEXP void rl_reset_after_signal PARAMS((void));
 READLINE_DLL_IMPEXP void rl_free_line_state PARAMS((void));
  
+READLINE_DLL_IMPEXP void rl_echo_signal_char PARAMS((int)); 
+
 READLINE_DLL_IMPEXP int rl_set_paren_blink_timeout PARAMS((int));
 
 /* Undocumented. */
@@ -511,7 +523,11 @@ READLINE_DLL_IMPEXP const char *rl_readline_name;
 
 /* The prompt readline uses.  This is set from the argument to
    readline (), and should not be assigned to directly. */
-READLINE_DLL_IMPEXP char *rl_prompt;
+extern char *rl_prompt;
+
+/* The prompt string that is actually displayed by rl_redisplay.  Public so
+   applications can more easily supply their own redisplay functions. */
+extern char *rl_display_prompt;
 
 /* The line buffer that is in use. */
 READLINE_DLL_IMPEXP char *rl_line_buffer;
@@ -551,6 +567,11 @@ READLINE_DLL_IMPEXP const char *rl_terminal_name;
 /* The input and output streams. */
 READLINE_DLL_IMPEXP FILE *rl_instream;
 READLINE_DLL_IMPEXP FILE *rl_outstream;
+
+/* If non-zero, Readline gives values of LINES and COLUMNS from the environment
+   greater precedence than values fetched from the kernel when computing the
+   screen dimensions. */
+READLINE_DLL_IMPEXP int rl_prefer_env_winsize;
 
 /* If non-zero, then this is the address of a function to call just
    before readline_internal () prints the first prompt. */
@@ -614,6 +635,10 @@ READLINE_DLL_IMPEXP int rl_catch_sigwinch;
    filename completer. */
 READLINE_DLL_IMPEXP rl_compentry_func_t *rl_completion_entry_function;
 
+/* Optional generator for menu completion.  Default is
+   rl_completion_entry_function (rl_filename_completion_function). */
+READLINE_DLL_IMPEXP rl_compentry_func_t *rl_menu_completion_entry_function;
+
 /* If rl_ignore_some_completions_function is non-NULL it is the address
    of a function to call after all of the possible matches have been
    generated, but before the actual completion is done to the input line.
@@ -667,17 +692,36 @@ READLINE_DLL_IMPEXP const char *rl_special_prefixes;
    completing on a directory name.  The function is called with
    the address of a string (the current directory name) as an arg.  It
    changes what is displayed when the possible completions are printed
-   or inserted. */
+   or inserted.  The directory completion hook should perform
+   any necessary dequoting.  This function should return 1 if it modifies
+   the directory name pointer passed as an argument.  If the directory
+   completion hook returns 0, it should not modify the directory name
+   pointer passed as an argument. */
 READLINE_DLL_IMPEXP rl_icppfunc_t *rl_directory_completion_hook;
 
 /* If non-zero, this is the address of a function to call when completing
    a directory name.  This function takes the address of the directory name
    to be modified as an argument.  Unlike rl_directory_completion_hook, it
    only modifies the directory name used in opendir(2), not what is displayed
-   when the possible completions are printed or inserted.  It is called
-   before rl_directory_completion_hook.  I'm not happy with how this works
-   yet, so it's undocumented. */
+   when the possible completions are printed or inserted.  If set, it takes
+   precedence over rl_directory_completion_hook.  The directory rewrite
+   hook should perform any necessary dequoting.  This function has the same
+   return value properties as the directory_completion_hook.
+
+   I'm not happy with how this works yet, so it's undocumented.  I'm trying
+   it in bash to see how well it goes. */
 READLINE_DLL_IMPEXP rl_icppfunc_t *rl_directory_rewrite_hook;
+
+/* If non-zero, this is the address of a function to call when reading
+   directory entries from the filesystem for completion and comparing
+   them to the partial word to be completed.  The function should
+   either return its first argument (if no conversion takes place) or
+   newly-allocated memory.  This can, for instance, convert filenames
+   between character sets for comparison against what's typed at the
+   keyboard.  The returned value is what is added to the list of
+   matches.  The second argument is the length of the filename to be
+   converted. */
+READLINE_DLL_IMPEXP rl_dequote_func_t *rl_filename_rewrite_hook;
 
 /* Backwards compatibility with previous versions of readline. */
 #define rl_symbolic_link_hook rl_directory_completion_hook
@@ -727,6 +771,8 @@ READLINE_DLL_IMPEXP int rl_attempted_completion_over;
    rl_complete_internal; available for use by application completion
    functions. */
 READLINE_DLL_IMPEXP int rl_completion_type;
+/* Set to the last key used to invoke one of the completion functions */
+READLINE_DLL_IMPEXP int rl_completion_invoking_key;
 
 /* Up to this many items will be displayed in response to a
    possible-completions call.  After that, we ask the user if she
@@ -753,6 +799,8 @@ READLINE_DLL_IMPEXP int rl_completion_found_quote;
    This is set to 0 by rl_complete_internal and may be changed by an
    application-specific completion function. */
 READLINE_DLL_IMPEXP int rl_completion_suppress_quote;
+/* If non-zero, readline will sort the completion matches.  On by default. */
+READLINE_DLL_IMPEXP int rl_sort_completion_match;
 
 /* If non-zero, a slash will be appended to completed filenames that are
    symbolic links to directory names, subject to the value of the
@@ -772,6 +820,10 @@ READLINE_DLL_IMPEXP int rl_ignore_completion_duplicates;
    completion character will be inserted as any other. */
 READLINE_DLL_IMPEXP int rl_inhibit_completion;
 
+/* Input error; can be returned by (*rl_getc_function) if readline is reading
+   a top-level command (RL_ISSTATE (RL_STATE_READCMD)). */
+#define READERR			(-2)
+
 /* Definitions available for use by readline clients. */
 #define RL_PROMPT_START_IGNORE	'\001'
 #define RL_PROMPT_END_IGNORE	'\002'
@@ -783,29 +835,34 @@ READLINE_DLL_IMPEXP int rl_inhibit_completion;
 #define MULT_MATCH      2
 
 /* Possible state values for rl_readline_state */
-#define RL_STATE_NONE		0x00000		/* no state; before first call */
+#define RL_STATE_NONE		0x000000		/* no state; before first call */
 
-#define RL_STATE_INITIALIZING	0x00001		/* initializing */
-#define RL_STATE_INITIALIZED	0x00002		/* initialization done */
-#define RL_STATE_TERMPREPPED	0x00004		/* terminal is prepped */
-#define RL_STATE_READCMD	0x00008		/* reading a command key */
-#define RL_STATE_METANEXT	0x00010		/* reading input after ESC */
-#define RL_STATE_DISPATCHING	0x00020		/* dispatching to a command */
-#define RL_STATE_MOREINPUT	0x00040		/* reading more input in a command function */
-#define RL_STATE_ISEARCH	0x00080		/* doing incremental search */
-#define RL_STATE_NSEARCH	0x00100		/* doing non-inc search */
-#define RL_STATE_SEARCH		0x00200		/* doing a history search */
-#define RL_STATE_NUMERICARG	0x00400		/* reading numeric argument */
-#define RL_STATE_MACROINPUT	0x00800		/* getting input from a macro */
-#define RL_STATE_MACRODEF	0x01000		/* defining keyboard macro */
-#define RL_STATE_OVERWRITE	0x02000		/* overwrite mode */
-#define RL_STATE_COMPLETING	0x04000		/* doing completion */
-#define RL_STATE_SIGHANDLER	0x08000		/* in readline sighandler */
-#define RL_STATE_UNDOING	0x10000		/* doing an undo */
-#define RL_STATE_INPUTPENDING	0x20000		/* rl_execute_next called */
-#define RL_STATE_TTYCSAVED	0x40000		/* tty special chars saved */
+#define RL_STATE_INITIALIZING	0x0000001	/* initializing */
+#define RL_STATE_INITIALIZED	0x0000002	/* initialization done */
+#define RL_STATE_TERMPREPPED	0x0000004	/* terminal is prepped */
+#define RL_STATE_READCMD	0x0000008	/* reading a command key */
+#define RL_STATE_METANEXT	0x0000010	/* reading input after ESC */
+#define RL_STATE_DISPATCHING	0x0000020	/* dispatching to a command */
+#define RL_STATE_MOREINPUT	0x0000040	/* reading more input in a command function */
+#define RL_STATE_ISEARCH	0x0000080	/* doing incremental search */
+#define RL_STATE_NSEARCH	0x0000100	/* doing non-inc search */
+#define RL_STATE_SEARCH		0x0000200	/* doing a history search */
+#define RL_STATE_NUMERICARG	0x0000400	/* reading numeric argument */
+#define RL_STATE_MACROINPUT	0x0000800	/* getting input from a macro */
+#define RL_STATE_MACRODEF	0x0001000	/* defining keyboard macro */
+#define RL_STATE_OVERWRITE	0x0002000	/* overwrite mode */
+#define RL_STATE_COMPLETING	0x0004000	/* doing completion */
+#define RL_STATE_SIGHANDLER	0x0008000	/* in readline sighandler */
+#define RL_STATE_UNDOING	0x0010000	/* doing an undo */
+#define RL_STATE_INPUTPENDING	0x0020000	/* rl_execute_next called */
+#define RL_STATE_TTYCSAVED	0x0040000	/* tty special chars saved */
+#define RL_STATE_CALLBACK	0x0080000	/* using the callback interface */
+#define RL_STATE_VIMOTION	0x0100000	/* reading vi motion arg */
+#define RL_STATE_MULTIKEY	0x0200000	/* reading multiple-key command */
+#define RL_STATE_VICMDONCE	0x0400000	/* entered vi command mode at least once */
+#define RL_STATE_REDISPLAYING	0x0800000	/* updating terminal display */
 
-#define RL_STATE_DONE		0x80000		/* done; accepted line */
+#define RL_STATE_DONE		0x1000000	/* done; accepted line */
 
 #define RL_SETSTATE(x)		(rl_readline_state |= (x))
 #define RL_UNSETSTATE(x)	(rl_readline_state &= ~(x))

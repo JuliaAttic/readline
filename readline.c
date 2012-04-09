@@ -1,25 +1,25 @@
 /* readline.c -- a general facility for reading lines of input
    with emacs style editing and completion. */
 
-/* Copyright (C) 1987-2002 Free Software Foundation, Inc.
+/* Copyright (C) 1987-2009 Free Software Foundation, Inc.
 
-   This file is part of the GNU Readline Library, a library for
-   reading lines of text with interactive input and history editing.
+   This file is part of the GNU Readline Library (Readline), a library
+   for reading lines of text with interactive input and history editing.      
 
-   The GNU Readline Library is free software; you can redistribute it
-   and/or modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2, or
+   Readline is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
    (at your option) any later version.
 
-   The GNU Readline Library is distributed in the hope that it will be
-   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
-   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   Readline is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
 
-   The GNU General Public License is often shipped with GNU software, and
-   is generally kept in a file called COPYING or LICENSE.  If you do not
-   have a copy of the license, write to the Free Software Foundation,
-   59 Temple Place, Suite 330, Boston, MA 02111 USA. */
+   You should have received a copy of the GNU General Public License
+   along with Readline.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 #define READLINE_LIBRARY
 
 #if defined (HAVE_CONFIG_H)
@@ -49,6 +49,11 @@
 
 #include <stdio.h>
 #include "posixjmp.h"
+#include <errno.h>
+
+#if !defined (errno)
+extern int errno;
+#endif /* !errno */
 
 /* System-specific feature definitions and include files. */
 #include "rldefs.h"
@@ -68,11 +73,11 @@
 #include "xmalloc.h"
 
 #ifndef RL_LIBRARY_VERSION
-#  define RL_LIBRARY_VERSION "5.0"
+#  define RL_LIBRARY_VERSION "5.1"
 #endif
 
 #ifndef RL_READLINE_VERSION
-#  define RL_READLINE_VERSION	0x0500
+#  define RL_READLINE_VERSION	0x0501
 #endif
 
 extern void _rl_free_history_entry PARAMS((HIST_ENTRY *));
@@ -86,6 +91,9 @@ static void bind_arrow_keys PARAMS((void));
 
 static void readline_default_bindings PARAMS((void));
 static void reset_default_bindings PARAMS((void));
+
+static int _rl_subseq_result PARAMS((int, Keymap, int, int));
+static int _rl_subseq_getchar PARAMS((int));
 
 /* **************************************************************** */
 /*								    */
@@ -103,6 +111,7 @@ int rl_gnu_readline_p = 1;
 /* A pointer to the keymap that is currently in use.
    By default, it is the standard emacs keymap. */
 Keymap _rl_keymap = emacs_standard_keymap;
+
 
 /* The current style of editing. */
 int rl_editing_mode = emacs_mode;
@@ -154,7 +163,7 @@ int rl_done;
 rl_command_func_t *rl_last_func = (rl_command_func_t *)NULL;
 
 /* Top level environment for readline_internal (). */
-procenv_t readline_top_level;
+procenv_t _rl_top_level;
 
 /* The streams we interact with. */
 FILE *_rl_in_stream, *_rl_out_stream;
@@ -167,7 +176,7 @@ FILE *rl_outstream = (FILE *)NULL;
    set to 1 if there is a controlling terminal, we can get its attributes,
    and the attributes include `echo'.  Look at rltty.c:prepare_terminal_settings
    for the code that sets it. */
-int readline_echoing_p = 0;
+int _rl_echoing_p = 0;
 
 /* Current prompt. */
 char *rl_prompt = (char *)NULL;
@@ -219,6 +228,9 @@ char *_rl_comment_begin;
 /* Keymap holding the function currently being executed. */
 Keymap rl_executing_keymap;
 
+/* Keymap we're currently using to dispatch. */
+Keymap _rl_dispatching_keymap;
+
 /* Non-zero means to erase entire line, including prompt, on empty input lines. */
 int rl_erase_empty_line = 0;
 
@@ -229,6 +241,9 @@ int rl_num_chars_to_read;
 /* Line buffer and maintenence. */
 char *rl_line_buffer = (char *)NULL;
 int rl_line_buffer_len = 0;
+
+/* Key sequence `contexts' */
+_rl_keyseq_cxt *_rl_kscxt = 0;
 
 /* Forward declarations used by the display, termcap, and history code. */
 
@@ -251,6 +266,19 @@ int _rl_convert_meta_chars_to_ascii = 1;
    rather than as a meta-prefixed escape sequence. */
 int _rl_output_meta_chars = 0;
 
+/* Non-zero means to look at the termios special characters and bind
+   them to equivalent readline functions at startup. */
+int _rl_bind_stty_chars = 1;
+
+/* Non-zero means to go through the history list at every newline (or
+   whenever rl_done is set and readline returns) and revert each line to
+   its initial state. */
+int _rl_revert_all_at_newline = 0;
+
+/* Non-zero means to honor the termios ECHOCTL bit and echo control
+   characters corresponding to keyboard-generated signals. */
+int _rl_echo_control_chars = 1;
+
 /* **************************************************************** */
 /*								    */
 /*			Top Level Functions			    */
@@ -268,6 +296,7 @@ rl_set_prompt (prompt)
 {
   FREE (rl_prompt);
   rl_prompt = prompt ? savestring (prompt) : (char *)NULL;
+  rl_display_prompt = rl_prompt ? rl_prompt : "";
 
   rl_visible_prompt_length = rl_expand_prompt (rl_prompt);
   return 0;
@@ -280,6 +309,9 @@ readline (prompt)
      const char *prompt;
 {
   char *value;
+#if 0
+  int in_callback;
+#endif
 
   /* If we are at EOF return a NULL string. */
   if (rl_pending_input == EOF)
@@ -288,20 +320,36 @@ readline (prompt)
       return ((char *)NULL);
     }
 
+#if 0
+  /* If readline() is called after installing a callback handler, temporarily
+     turn off the callback state to avoid ensuing messiness.  Patch supplied
+     by the gdb folks.  XXX -- disabled.  This can be fooled and readline
+     left in a strange state by a poorly-timed longjmp. */
+  if (in_callback = RL_ISSTATE (RL_STATE_CALLBACK))
+    RL_UNSETSTATE (RL_STATE_CALLBACK);
+#endif
+
   rl_set_prompt (prompt);
 
   rl_initialize ();
-  (*rl_prep_term_function) (_rl_meta_flag);
+  if (rl_prep_term_function)
+    (*rl_prep_term_function) (_rl_meta_flag);
 
 #if defined (HANDLE_SIGNALS)
   rl_set_signals ();
 #endif
 
   value = readline_internal ();
-  (*rl_deprep_term_function) ();
+  if (rl_deprep_term_function)
+    (*rl_deprep_term_function) ();
 
 #if defined (HANDLE_SIGNALS)
   rl_clear_signals ();
+#endif
+
+#if 0
+  if (in_callback)
+    RL_SETSTATE (RL_STATE_CALLBACK);
 #endif
 
   return (value);
@@ -327,14 +375,14 @@ readline_internal_setup ()
   /* If we're not echoing, we still want to at least print a prompt, because
      rl_redisplay will not do it for us.  If the calling application has a
      custom redisplay function, though, let that function handle it. */
-  if (readline_echoing_p == 0 && rl_redisplay_function == rl_redisplay)
+  if (_rl_echoing_p == 0 && rl_redisplay_function == rl_redisplay)
     {
       if (rl_prompt && rl_already_prompted == 0)
 	{
 	  nprompt = _rl_strip_prompt (rl_prompt);
 	  fprintf (_rl_out_stream, "%s", nprompt);
 	  fflush (_rl_out_stream);
-	  free (nprompt);
+	  xfree (nprompt);
 	}
     }
   else
@@ -348,11 +396,13 @@ readline_internal_setup ()
 
 #if defined (VI_MODE)
   if (rl_editing_mode == vi_mode)
-    rl_vi_insertion_mode (1, 'i');
+    rl_vi_insert_mode (1, 'i');
 #endif /* VI_MODE */
 
   if (rl_pre_input_hook)
     (*rl_pre_input_hook) ();
+
+  RL_CHECK_SIGNALS ();
 }
 
 STATIC_CALLBACK char *
@@ -361,6 +411,8 @@ readline_internal_teardown (eof)
 {
   char *temp;
   HIST_ENTRY *entry;
+
+  RL_CHECK_SIGNALS ();
 
   /* Restore the original of this history line, iff the line that we
      are editing was originally in the history, AND the line has changed. */
@@ -374,8 +426,11 @@ readline_internal_teardown (eof)
       _rl_free_history_entry (entry);
 
       strcpy (the_line, temp);
-      free (temp);
+      xfree (temp);
     }
+
+  if (_rl_revert_all_at_newline)
+    _rl_revert_all_lines ();
 
   /* At any rate, it is highly likely that this line has an undo list.  Get
      rid of it now. */
@@ -386,6 +441,36 @@ readline_internal_teardown (eof)
   _rl_set_insert_mode (RL_IM_INSERT, 0);
 
   return (eof ? (char *)NULL : savestring (the_line));
+}
+
+void
+_rl_internal_char_cleanup ()
+{
+#if defined (VI_MODE)
+  /* In vi mode, when you exit insert mode, the cursor moves back
+     over the previous character.  We explicitly check for that here. */
+  if (rl_editing_mode == vi_mode && _rl_keymap == vi_movement_keymap)
+    rl_vi_check ();
+#endif /* VI_MODE */
+
+  if (rl_num_chars_to_read && rl_end >= rl_num_chars_to_read)
+    {
+      (*rl_redisplay_function) ();
+      _rl_want_redisplay = 0;
+      rl_newline (1, '\n');
+    }
+
+  if (rl_done == 0)
+    {
+      (*rl_redisplay_function) ();
+      _rl_want_redisplay = 0;
+    }
+
+  /* If the application writer has told us to erase the entire line if
+     the only character typed was something bound to rl_newline, do so. */
+  if (rl_erase_empty_line && rl_done && rl_last_func == rl_newline &&
+      rl_point == 0 && rl_end == 0)
+    _rl_erase_entire_line ();
 }
 
 STATIC_CALLBACK int
@@ -407,21 +492,44 @@ readline_internal_charloop ()
 #endif
       lk = _rl_last_command_was_kill;
 
-      code = setjmp (readline_top_level);
+      code = setjmp (_rl_top_level);
 
       if (code)
-	(*rl_redisplay_function) ();
+	{
+	  (*rl_redisplay_function) ();
+	  _rl_want_redisplay = 0;
+	  /* If we get here, we're not being called from something dispatched
+	     from _rl_callback_read_char(), which sets up its own value of
+	     _rl_top_level (saving and restoring the old, of course), so
+	     we can just return here. */
+	  if (RL_ISSTATE (RL_STATE_CALLBACK))
+	    return (0);
+	}
 
       if (rl_pending_input == 0)
 	{
 	  /* Then initialize the argument and number of keys read. */
-	  _rl_init_argument ();
+	  _rl_reset_argument ();
 	  rl_key_sequence_length = 0;
 	}
 
       RL_SETSTATE(RL_STATE_READCMD);
       c = rl_read_key ();
       RL_UNSETSTATE(RL_STATE_READCMD);
+
+      /* look at input.c:rl_getc() for the circumstances under which this will
+	 be returned; punt immediately on read error without converting it to
+	 a newline. */
+      if (c == READERR)
+	{
+#if defined (READLINE_CALLBACKS)
+	  RL_SETSTATE(RL_STATE_DONE);
+	  return (rl_done = 1);
+#else
+	  eof_found = 1;
+	  break;
+#endif
+	}
 
       /* EOF typed to a non-blank line is a <NL>. */
       if (c == EOF && rl_end)
@@ -442,6 +550,7 @@ readline_internal_charloop ()
 
       lastc = c;
       _rl_dispatch ((unsigned char)c, _rl_keymap);
+      RL_CHECK_SIGNALS ();
 
       /* If there was no change in _rl_last_command_was_kill, then no kill
 	 has taken place.  Note that if input is pending we are reading
@@ -449,27 +558,7 @@ readline_internal_charloop ()
       if (rl_pending_input == 0 && lk == _rl_last_command_was_kill)
 	_rl_last_command_was_kill = 0;
 
-#if defined (VI_MODE)
-      /* In vi mode, when you exit insert mode, the cursor moves back
-	 over the previous character.  We explicitly check for that here. */
-      if (rl_editing_mode == vi_mode && _rl_keymap == vi_movement_keymap)
-	rl_vi_check ();
-#endif /* VI_MODE */
-
-      if (rl_num_chars_to_read && rl_end >= rl_num_chars_to_read)
-        {
-          (*rl_redisplay_function) ();
-          rl_newline (1, '\n');
-        }
-
-      if (rl_done == 0)
-	(*rl_redisplay_function) ();
-
-      /* If the application writer has told us to erase the entire line if
-	  the only character typed was something bound to rl_newline, do so. */
-      if (rl_erase_empty_line && rl_done && rl_last_func == rl_newline &&
-	  rl_point == 0 && rl_end == 0)
-	_rl_erase_entire_line ();
+      _rl_internal_char_cleanup ();
 
 #if defined (READLINE_CALLBACKS)
       return 0;
@@ -519,6 +608,110 @@ _rl_set_the_line ()
   the_line = rl_line_buffer;
 }
 
+#if defined (READLINE_CALLBACKS)
+_rl_keyseq_cxt *
+_rl_keyseq_cxt_alloc ()
+{
+  _rl_keyseq_cxt *cxt;
+
+  cxt = (_rl_keyseq_cxt *)xmalloc (sizeof (_rl_keyseq_cxt));
+
+  cxt->flags = cxt->subseq_arg = cxt->subseq_retval = 0;
+
+  cxt->okey = 0;
+  cxt->ocxt = _rl_kscxt;
+  cxt->childval = 42;		/* sentinel value */
+
+  return cxt;
+}
+
+void
+_rl_keyseq_cxt_dispose (cxt)
+    _rl_keyseq_cxt *cxt;
+{
+  xfree (cxt);
+}
+
+void
+_rl_keyseq_chain_dispose ()
+{
+  _rl_keyseq_cxt *cxt;
+
+  while (_rl_kscxt)
+    {
+      cxt = _rl_kscxt;
+      _rl_kscxt = _rl_kscxt->ocxt;
+      _rl_keyseq_cxt_dispose (cxt);
+    }
+}
+#endif
+
+static int
+_rl_subseq_getchar (key)
+     int key;
+{
+  int k;
+
+  if (key == ESC)
+    RL_SETSTATE(RL_STATE_METANEXT);
+  RL_SETSTATE(RL_STATE_MOREINPUT);
+  k = rl_read_key ();
+  RL_UNSETSTATE(RL_STATE_MOREINPUT);
+  if (key == ESC)
+    RL_UNSETSTATE(RL_STATE_METANEXT);
+
+  return k;
+}
+
+#if defined (READLINE_CALLBACKS)
+int
+_rl_dispatch_callback (cxt)
+     _rl_keyseq_cxt *cxt;
+{
+  int nkey, r;
+
+  /* For now */
+  /* The first time this context is used, we want to read input and dispatch
+     on it.  When traversing the chain of contexts back `up', we want to use
+     the value from the next context down.  We're simulating recursion using
+     a chain of contexts. */
+  if ((cxt->flags & KSEQ_DISPATCHED) == 0)
+    {
+      nkey = _rl_subseq_getchar (cxt->okey);
+      if (nkey < 0)
+	{
+	  _rl_abort_internal ();
+	  return -1;
+	}
+      r = _rl_dispatch_subseq (nkey, cxt->dmap, cxt->subseq_arg);
+      cxt->flags |= KSEQ_DISPATCHED;
+    }
+  else
+    r = cxt->childval;
+
+  /* For now */
+  if (r != -3)	/* don't do this if we indicate there will be other matches */
+    r = _rl_subseq_result (r, cxt->oldmap, cxt->okey, (cxt->flags & KSEQ_SUBSEQ));
+
+  RL_CHECK_SIGNALS ();
+  if (r == 0)			/* success! */
+    {
+      _rl_keyseq_chain_dispose ();
+      RL_UNSETSTATE (RL_STATE_MULTIKEY);
+      return r;
+    }
+
+  if (r != -3)			/* magic value that says we added to the chain */
+    _rl_kscxt = cxt->ocxt;
+  if (_rl_kscxt)
+    _rl_kscxt->childval = r;
+  if (r != -3)
+    _rl_keyseq_cxt_dispose (cxt);
+
+  return r;
+}
+#endif /* READLINE_CALLBACKS */
+  
 /* Do the command associated with KEY in MAP.
    If the associated command is really a keymap, then read
    another key, and dispatch into that map. */
@@ -527,6 +720,7 @@ _rl_dispatch (key, map)
      register int key;
      Keymap map;
 {
+  _rl_dispatching_keymap = map;
   return _rl_dispatch_subseq (key, map, 0);
 }
 
@@ -539,6 +733,9 @@ _rl_dispatch_subseq (key, map, got_subseq)
   int r, newkey;
   char *macro;
   rl_command_func_t *func;
+#if defined (READLINE_CALLBACKS)
+  _rl_keyseq_cxt *cxt;
+#endif
 
   if (META_CHAR (key) && _rl_convert_meta_chars_to_ascii)
     {
@@ -572,13 +769,9 @@ _rl_dispatch_subseq (key, map, got_subseq)
 
 	  rl_executing_keymap = map;
 
-#if 0
-	  _rl_suppress_redisplay = (map[key].function == rl_insert) && _rl_input_available ();
-#endif
-
 	  rl_dispatching = 1;
 	  RL_SETSTATE(RL_STATE_DISPATCHING);
-	  r = (*map[key].function)(rl_numeric_arg * rl_arg_sign, key);
+	  (*map[key].function)(rl_numeric_arg * rl_arg_sign, key);
 	  RL_UNSETSTATE(RL_STATE_DISPATCHING);
 	  rl_dispatching = 0;
 
@@ -587,6 +780,8 @@ _rl_dispatch_subseq (key, map, got_subseq)
 	     remember the last command executed in this variable. */
 	  if (rl_pending_input == 0 && map[key].function != rl_digit_argument)
 	    rl_last_func = map[key].function;
+
+	  RL_CHECK_SIGNALS ();
 	}
       else if (map[ANYOTHERKEY].function)
 	{
@@ -607,6 +802,10 @@ _rl_dispatch_subseq (key, map, got_subseq)
 	}
       else
 	{
+#if defined (READLINE_CALLBACKS)
+	  RL_UNSETSTATE (RL_STATE_MULTIKEY);
+	  _rl_keyseq_chain_dispose ();
+#endif
 	  _rl_abort_internal ();
 	  return -1;
 	}
@@ -628,58 +827,43 @@ _rl_dispatch_subseq (key, map, got_subseq)
 #endif
 
 	  rl_key_sequence_length++;
+	  _rl_dispatching_keymap = FUNCTION_TO_KEYMAP (map, key);
 
-	  if (key == ESC)
-	    RL_SETSTATE(RL_STATE_METANEXT);
-	  RL_SETSTATE(RL_STATE_MOREINPUT);
-	  newkey = rl_read_key ();
-	  RL_UNSETSTATE(RL_STATE_MOREINPUT);
-	  if (key == ESC)
-	    RL_UNSETSTATE(RL_STATE_METANEXT);
+	  /* Allocate new context here.  Use linked contexts (linked through
+	     cxt->ocxt) to simulate recursion */
+#if defined (READLINE_CALLBACKS)
+	  if (RL_ISSTATE (RL_STATE_CALLBACK))
+	    {
+	      /* Return 0 only the first time, to indicate success to
+		 _rl_callback_read_char.  The rest of the time, we're called
+		 from _rl_dispatch_callback, so we return -3 to indicate
+		 special handling is necessary. */
+	      r = RL_ISSTATE (RL_STATE_MULTIKEY) ? -3 : 0;
+	      cxt = _rl_keyseq_cxt_alloc ();
 
+	      if (got_subseq)
+		cxt->flags |= KSEQ_SUBSEQ;
+	      cxt->okey = key;
+	      cxt->oldmap = map;
+	      cxt->dmap = _rl_dispatching_keymap;
+	      cxt->subseq_arg = got_subseq || cxt->dmap[ANYOTHERKEY].function;
+
+	      RL_SETSTATE (RL_STATE_MULTIKEY);
+	      _rl_kscxt = cxt;
+
+	      return r;		/* don't indicate immediate success */
+	    }
+#endif
+
+	  newkey = _rl_subseq_getchar (key);
 	  if (newkey < 0)
 	    {
 	      _rl_abort_internal ();
 	      return -1;
 	    }
 
-	  r = _rl_dispatch_subseq (newkey, FUNCTION_TO_KEYMAP (map, key), got_subseq || map[ANYOTHERKEY].function);
-
-	  if (r == -2)
-	    /* We didn't match anything, and the keymap we're indexed into
-	       shadowed a function previously bound to that prefix.  Call
-	       the function.  The recursive call to _rl_dispatch_subseq has
-	       already taken care of pushing any necessary input back onto
-	       the input queue with _rl_unget_char. */
-	    {
-#if 0
-	      r = _rl_dispatch (ANYOTHERKEY, FUNCTION_TO_KEYMAP (map, key));
-#else
-	      /* XXX - experimental code -- might never be executed.  Save
-		 for later. */
-	      Keymap m = FUNCTION_TO_KEYMAP (map, key);
-	      int type = m[ANYOTHERKEY].type;
-	      func = m[ANYOTHERKEY].function;
-	      if (type == ISFUNC && func == rl_do_lowercase_version)
-		r = _rl_dispatch (_rl_to_lower (key), map);
-	      else
-		r = _rl_dispatch (ANYOTHERKEY, m);
-#endif
-	    }
-	  else if (r && map[ANYOTHERKEY].function)
-	    {
-	      /* We didn't match (r is probably -1), so return something to
-		 tell the caller that it should try ANYOTHERKEY for an
-		 overridden function. */
-	      _rl_unget_char (key);
-	      return -2;
-	    }
-	  else if (r && got_subseq)
-	    {
-	      /* OK, back up the chain. */
-	      _rl_unget_char (key);
-	      return -1;
-	    }
+	  r = _rl_dispatch_subseq (newkey, _rl_dispatching_keymap, got_subseq || map[ANYOTHERKEY].function);
+	  return _rl_subseq_result (r, map, key, got_subseq);
 	}
       else
 	{
@@ -703,7 +887,67 @@ _rl_dispatch_subseq (key, map, got_subseq)
       _rl_vi_textmod_command (key))
     _rl_vi_set_last (key, rl_numeric_arg, rl_arg_sign);
 #endif
+
   return (r);
+}
+
+static int
+_rl_subseq_result (r, map, key, got_subseq)
+     int r;
+     Keymap map;
+     int key, got_subseq;
+{
+  Keymap m;
+  int type, nt;
+  rl_command_func_t *func, *nf;
+
+  if (r == -2)
+    /* We didn't match anything, and the keymap we're indexed into
+       shadowed a function previously bound to that prefix.  Call
+       the function.  The recursive call to _rl_dispatch_subseq has
+       already taken care of pushing any necessary input back onto
+       the input queue with _rl_unget_char. */
+    {
+      m = _rl_dispatching_keymap;
+      type = m[ANYOTHERKEY].type;
+      func = m[ANYOTHERKEY].function;
+      if (type == ISFUNC && func == rl_do_lowercase_version)
+	r = _rl_dispatch (_rl_to_lower (key), map);
+      else if (type == ISFUNC && func == rl_insert)
+	{
+	  /* If the function that was shadowed was self-insert, we
+	     somehow need a keymap with map[key].func == self-insert.
+	     Let's use this one. */
+	  nt = m[key].type;
+	  nf = m[key].function;
+
+	  m[key].type = type;
+	  m[key].function = func;
+	  r = _rl_dispatch (key, m);
+	  m[key].type = nt;
+	  m[key].function = nf;
+	}
+      else
+	r = _rl_dispatch (ANYOTHERKEY, m);
+    }
+  else if (r && map[ANYOTHERKEY].function)
+    {
+      /* We didn't match (r is probably -1), so return something to
+	 tell the caller that it should try ANYOTHERKEY for an
+	 overridden function. */
+      _rl_unget_char (key);
+      _rl_dispatching_keymap = map;
+      return -2;
+    }
+  else if (r && got_subseq)
+    {
+      /* OK, back up the chain. */
+      _rl_unget_char (key);
+      _rl_dispatching_keymap = map;
+      return -1;
+    }
+
+  return r;
 }
 
 /* **************************************************************** */
@@ -863,7 +1107,8 @@ readline_initialize_everything ()
 static void
 readline_default_bindings ()
 {
-  rl_tty_set_default_bindings (_rl_keymap);
+  if (_rl_bind_stty_chars)
+    rl_tty_set_default_bindings (_rl_keymap);
 }
 
 /* Reset the default bindings for the terminal special characters we're
@@ -871,8 +1116,11 @@ readline_default_bindings ()
 static void
 reset_default_bindings ()
 {
-  rl_tty_unset_default_bindings (_rl_keymap);
-  rl_tty_set_default_bindings (_rl_keymap);
+  if (_rl_bind_stty_chars)
+    {
+      rl_tty_unset_default_bindings (_rl_keymap);
+      rl_tty_set_default_bindings (_rl_keymap);
+    }
 }
 
 /* Bind some common arrow key sequences in MAP. */
@@ -906,6 +1154,13 @@ bind_arrow_keys_internal (map)
   rl_bind_keyseq_if_unbound ("\033OH", rl_beg_of_line);
   rl_bind_keyseq_if_unbound ("\033OF", rl_end_of_line);
 
+#if defined (__MINGW32__)
+  rl_bind_keyseq_if_unbound ("\340H", rl_get_previous_history);
+  rl_bind_keyseq_if_unbound ("\340P", rl_get_next_history);
+  rl_bind_keyseq_if_unbound ("\340M", rl_forward_char);
+  rl_bind_keyseq_if_unbound ("\340K", rl_backward_char);
+#endif
+
   _rl_keymap = xkeymap;
 }
 
@@ -919,6 +1174,10 @@ bind_arrow_keys ()
 
 #if defined (VI_MODE)
   bind_arrow_keys_internal (vi_movement_keymap);
+  /* Unbind vi_movement_keymap[ESC] to allow users to repeatedly hit ESC
+     in vi command mode while still allowing the arrow keys to work. */
+  if (vi_movement_keymap[ESC].type == ISKMAP)
+    rl_bind_keyseq_in_map ("\033", (rl_command_func_t *)NULL, vi_movement_keymap);
   bind_arrow_keys_internal (vi_insertion_keymap);
 #endif
 }
@@ -958,9 +1217,8 @@ rl_save_state (sp)
   sp->macro = rl_executing_macro;
 
   sp->catchsigs = rl_catch_signals;
-#ifdef SIGWINCH
   sp->catchsigwinch = rl_catch_sigwinch;
-#endif /* SIGWINCH */
+
   return (0);
 }
 
@@ -993,9 +1251,7 @@ rl_restore_state (sp)
   rl_executing_macro = sp->macro;
 
   rl_catch_signals = sp->catchsigs;
-#ifdef SIGWINCH
   rl_catch_sigwinch = sp->catchsigwinch;
-#endif /* SIGWINCH */
 
   return (0);
 }
